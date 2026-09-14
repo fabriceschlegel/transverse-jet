@@ -1,0 +1,60 @@
+[
+  {
+    "directory": "results/smoke",
+    "cells_per_diameter": 4.0,
+    "final_time": 4.0,
+    "final_diagnostics": {
+      "time": 4.0,
+      "step": 240,
+      "divergence_linf": 1.7689604121795544e-12,
+      "divergence_rms": 1.4249017203427632e-13,
+      "volume_inflow": 16.908380575506083,
+      "volume_outflow": 16.908380575506122,
+      "relative_volume_imbalance": 2.311271046466602e-15,
+      "scalar_mass": 7.497844540643195,
+      "scalar_balance_error": 6.838973831690964e-14,
+      "scalar_min": 2.4705827237763853e-23,
+      "scalar_max": 0.9999999999997374,
+      "kinetic_energy": 98.32006653880246,
+      "max_speed": 3.3255165189313365,
+      "outlet_backflow_fraction": 0.0,
+      "upstream_box_circulation": -1.3803231865962722,
+      "upstream_reversed_shear_area": 0.0,
+      "upstream_shear_min": 0.021460135161252916,
+      "trajectory_x": 1.875,
+      "scalar_centroid_y": 1.6327560063420288,
+      "scalar_centroid_z": 3.745638099159414e-14,
+      "scalar_width_z": 0.6077340341055736,
+      "pressure_iterations": 10
+    }
+  },
+  {
+    "directory": "results/baseline",
+    "cells_per_diameter": 8.0,
+    "final_time": 4.0,
+    "final_diagnostics": {
+      "time": 4.0,
+      "step": 591,
+      "divergence_linf": 3.3072598479289006e-12,
+      "divergence_rms": 1.72992104620622e-13,
+      "volume_inflow": 16.98927791010425,
+      "volume_outflow": 16.989277910104303,
+      "relative_volume_imbalance": 3.1367257316047115e-15,
+      "scalar_mass": 8.124851392220581,
+      "scalar_balance_error": 1.7763568394002505e-13,
+      "scalar_min": 3.254457796222099e-33,
+      "scalar_max": 1.0000000000000009,
+      "kinetic_energy": 101.97347424391106,
+      "max_speed": 3.9680788909415634,
+      "outlet_backflow_fraction": 0.0,
+      "upstream_box_circulation": -1.547367488190715,
+      "upstream_reversed_shear_area": 0.0,
+      "upstream_shear_min": 0.016116523279365264,
+      "trajectory_x": 1.9375,
+      "scalar_centroid_y": 1.9339950871202243,
+      "scalar_centroid_z": -4.984629653910685e-15,
+      "scalar_width_z": 0.5919391826992102,
+      "pressure_iterations": 12
+    }
+  }
+]

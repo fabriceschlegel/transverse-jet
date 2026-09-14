@@ -1,0 +1,20 @@
+{
+  "h": 0.125,
+  "x_min": -3.0,
+  "x_max": 7.0,
+  "pipe_depth": 2.0,
+  "height": 4.0,
+  "half_width": 2.0,
+  "velocity_ratio": 2.0,
+  "re_jet": 100.0,
+  "schmidt": 1.0,
+  "delta99": 0.75,
+  "cfl": 0.45,
+  "dt_max": 0.02,
+  "end_time": 4.1,
+  "output_interval": 0.5,
+  "sample_interval": 0.1,
+  "average_start": 2.0,
+  "pressure_rtol": 1e-10,
+  "pressure_maxiter": 1000
+}
