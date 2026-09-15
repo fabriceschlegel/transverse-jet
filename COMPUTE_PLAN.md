@@ -1,6 +1,6 @@
 # Compute decision
 
-**Status: DECIDED — 2026-09-15**
+**Status: PETSc/GAMG MPI PATH IMPLEMENTED — 2026-09-15**
 
 This project will keep the existing CPU NumPy/SciPy MAC-grid solver as the
 numerical reference while developing two separate execution paths.
@@ -19,12 +19,13 @@ Before and after that change, timings will separate:
 3. the three pressure projections per SSP-RK3 timestep;
 4. diagnostics and output.
 
-PETSc through `petsc4py` and MPI is the next pressure-solver option only if
-profiling shows that pressure dominates after the stencil parallelization.
-Adopting PETSc means distributing the pressure vectors and matrix and measuring
-MPI overhead; merely installing PETSc will not make the current Python process
-multicore. A threaded geometric multigrid implementation remains an alternative
-for this structured grid.
+Profiling showed pressure at 96% of baseline runtime, so PETSc through `petsc4py`
+and OpenMPI is now implemented as the optional `petsc-gamg` backend. The pressure
+matrix and vectors are distributed; explicit fields remain replicated. On the
+662,016-active-cell refined pilot, four ranks reduced pressure time from 62.32 s
+to 7.22 s and total runtime from 68.22 s to 14.15 s. Eight ranks were slower
+overall, so four is the measured MacBook default. A fully domain-decomposed or
+threaded geometric multigrid implementation remains a future scaling option.
 
 Independent cases and refinement studies may be run concurrently immediately,
 with one process and one BLAS thread per case.

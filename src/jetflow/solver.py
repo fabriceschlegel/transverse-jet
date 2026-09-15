@@ -1,7 +1,9 @@
 from dataclasses import dataclass
+from time import perf_counter
 import numpy as np
 from .grid import Grid
 from .pressure import Projection
+from .acceleration import momentum_component, scalar_rhs_kernel
 
 
 @dataclass
@@ -15,10 +17,18 @@ class State:
 
 
 class Solver:
-    def __init__(self, config):
+    def _add_timing(self, key, duration):
+        # Some operator-verification tests construct a lightweight Solver via
+        # __new__ to isolate the stencil without building a pressure matrix.
+        if hasattr(self, "timings"):
+            self.timings[key] += duration
+
+    def __init__(self, config, pressure_backend="pyamg"):
+        self.timings = {"momentum_seconds": 0.0, "scalar_seconds": 0.0,
+                        "pressure_seconds": 0.0, "advance_seconds": 0.0}
         self.config = config
         self.grid = g = Grid(config)
-        self.projection = Projection(g)
+        self.projection = Projection(g, pressure_backend)
         vel = g.zeros()
         vel[0][:] = g.cross_profile[None, :, None]
         # Fill the submerged pipe with its imposed parabolic inlet profile.
@@ -29,19 +39,26 @@ class Solver:
         scalar = ((g.y[None, :, None] < 0) & g.fluid).astype(float)
         self.state = State(vel, scalar, pressure)
         self.initial_scalar_mass = scalar.sum() * g.h**3
+        # Compile outside the measured simulation interval. Numba caches the
+        # machine code, so later processes normally pay only cache-load cost.
+        start = perf_counter()
+        self.momentum_rhs(vel)
+        self.scalar_rhs(scalar, vel)
+        self.jit_warmup_seconds = perf_counter() - start
+        for key in self.timings:
+            self.timings[key] = 0.0
 
     def momentum_rhs(self, velocity):
         g, c = self.grid, self.config
+        start = perf_counter()
         result = []
         for component_axis, a in enumerate(velocity):
-            rate = np.zeros_like(a)
-            for axis in range(3):
-                minus, plus = g.neighbors(a, component_axis, axis)
-                advector = g.at_component(velocity, axis, component_axis)
-                rate += -advector * (plus - minus) / (2 * g.h)
-                rate += c.nu * (plus - 2 * a + minus) / g.h**2
-            rate[~g.free[component_axis]] = 0
-            result.append(rate)
+            advectors = [g.at_component(velocity, axis, component_axis)
+                         for axis in range(3)]
+            result.append(momentum_component(a, *advectors,
+                                             g.support[component_axis],
+                                             g.free[component_axis], g.h, c.nu))
+        self._add_timing("momentum_seconds", perf_counter() - start)
         return result
 
     def scalar_rhs(self, scalar, velocity):
@@ -51,25 +68,15 @@ class Solver:
         Scalar numerical diffusion is explicitly a prototype limitation.
         """
         g, c = self.grid, self.config
-        fluxes = g.zeros()
-        for axis, (vel, flux) in enumerate(zip(velocity, fluxes)):
-            low, high, mid = [slice(None)] * 3, [slice(None)] * 3, [slice(None)] * 3
-            low[axis], high[axis], mid[axis] = slice(None, -1), slice(1, None), slice(1, -1)
-            low, high, mid = tuple(low), tuple(high), tuple(mid)
-            left, right = scalar[low], scalar[high]
-            connected = g.fluid[low] & g.fluid[high]
-            flux[mid] = (vel[mid] * np.where(vel[mid] >= 0, left, right)
-                         - c.kappa * (right - left) / g.h) * connected
-        # Crossflow inlet c=0, pipe reservoir c=1; Dirichlet half-cell diffusion.
-        fluxes[0][0] = (velocity[0][0] * np.where(velocity[0][0] >= 0, 0, scalar[0])
-                         - 2 * c.kappa * scalar[0] / g.h) * g.inlet
-        fluxes[1][:, 0, :] = (velocity[1][:, 0, :] * np.where(velocity[1][:, 0, :] >= 0, 1, scalar[:, 0, :])
-                              - 2 * c.kappa * (scalar[:, 0, :] - 1) / g.h) * g.pipe_inlet
-        # Zero diffusive outlet flux; ambient scalar on any outlet backflow.
-        fluxes[0][-1] = velocity[0][-1] * np.where(velocity[0][-1] >= 0, scalar[-1], 0) * g.outlet
-        rhs = -g.divergence(fluxes)
-        rhs[~g.fluid] = 0
-        net_in = (fluxes[0][0].sum() + fluxes[1][:, 0, :].sum() - fluxes[0][-1].sum()) * g.h**2
+        start = perf_counter()
+        rhs = scalar_rhs_kernel(scalar, *velocity, g.fluid, g.h, c.kappa)
+        inlet_x = (velocity[0][0] * np.where(velocity[0][0] >= 0, 0, scalar[0])
+                   - 2 * c.kappa * scalar[0] / g.h) * g.inlet
+        inlet_y = (velocity[1][:, 0, :] * np.where(velocity[1][:, 0, :] >= 0, 1, scalar[:, 0, :])
+                   - 2 * c.kappa * (scalar[:, 0, :] - 1) / g.h) * g.pipe_inlet
+        outlet_x = velocity[0][-1] * np.where(velocity[0][-1] >= 0, scalar[-1], 0) * g.outlet
+        net_in = (inlet_x.sum() + inlet_y.sum() - outlet_x.sum()) * g.h**2
+        self._add_timing("scalar_seconds", perf_counter() - start)
         return rhs, float(net_in)
 
     def timestep(self):
@@ -80,6 +87,7 @@ class Solver:
 
     def advance(self, dt=None):
         """SSP-RK3 method-of-lines stages, each followed by a MAC projection."""
+        advance_start = perf_counter()
         dt = self.timestep() if dt is None else dt
         if not np.isfinite(dt) or dt <= 0:
             raise ValueError("dt must be positive and finite")
@@ -92,7 +100,9 @@ class Solver:
                       for b, a, rate in zip(u0, velocity, rhs_u)]
             new_scalar = base_weight * c0 + (1 - base_weight) * (scalar + dt * rhs_c)
             g.boundary_conditions(result, extrapolate_outlet=True)
+            pressure_start = perf_counter()
             pressure = self.projection.apply(result, (1 - base_weight) * dt)
+            self.timings["pressure_seconds"] += perf_counter() - pressure_start
             return result, new_scalar, pressure, net
         u1, c1, _, q0 = stage(u0, c0, 0)
         u2, c2, _, q1 = stage(u1, c1, 0.75)
@@ -106,4 +116,5 @@ class Solver:
             raise RuntimeError(f"Discrete divergence {divergence:g} exceeds acceptance tolerance")
         self.state = State(u3, c3, p3, s.time + dt, s.step + 1,
                            s.scalar_boundary_integral + dt * (q0 / 6 + q1 / 6 + 2 * q2 / 3))
+        self.timings["advance_seconds"] += perf_counter() - advance_start
         return dt

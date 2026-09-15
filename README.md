@@ -10,7 +10,7 @@ Create a project-local environment with Python 3.10 or newer:
 
 ```sh
 python3 -m venv .venv
-.venv/bin/python -m pip install -e '.[test]'
+.venv/bin/python -m pip install -e '.[test,visualization]'
 ```
 
 Then, from this directory:
@@ -22,6 +22,30 @@ Then, from this directory:
 ./run.sh report results/new-baseline
 ./run.sh compare results/new-smoke results/new-baseline --output results/new-comparison
 ```
+
+### PETSc/MPI pressure backend on Apple Silicon
+
+Install the native MPI-enabled PETSc library and compile matching Python bindings:
+
+```sh
+brew install petsc open-mpi
+PETSC_DIR=/opt/homebrew/opt/petsc MPICC=/opt/homebrew/bin/mpicc \
+  .venv/bin/python -m pip install 'petsc4py==3.25.5' 'mpi4py>=4.1'
+```
+
+Run with four MPI ranks (the measured optimum for the included 16-cells/D pilot):
+
+```sh
+MPI_RANKS=4 ./run-mpi.sh run --pressure-backend petsc-gamg \
+  --config cases/refined.json --output results/mac-refined-petsc
+./run.sh report results/mac-refined-petsc
+./run.sh structures results/mac-refined-petsc
+```
+
+The PETSc path distributes CG/GAMG pressure algebra while retaining replicated velocity/scalar fields on each
+rank. Only rank zero writes results. This is a measured local acceleration path, not yet full domain decomposition.
+The Homebrew PETSc bottle has GAMG but not hypre; selecting `petsc-hypre` therefore fails clearly instead of silently
+changing preconditioners. A hypre-enabled custom PETSc build is optional future work.
 
 Open the resulting `report.html` in a browser. Its slider moves through saved physical times;
 the color scales are fixed across frames. No server, account, or internet access is required.
@@ -121,8 +145,11 @@ multicore MacBook Pro M4 implementation, with PETSc/petsc4py plus MPI reserved
 for the pressure projection if profiling justifies it. Use nekRS 26.0 with CUDA
 for the AWS NVIDIA GPU implementation. See [COMPUTE_PLAN.md](COMPUTE_PLAN.md).
 
-The code uses CPU NumPy/SciPy and a multigrid pressure preconditioner. It has no GPU or distributed MPI implementation.
-More vCPUs do not automatically accelerate one run. Use the measured `elapsed_seconds` before renting capacity;
+The explicit momentum and scalar stencils use Numba CPU parallelism; SciPy CG with a PyAMG multigrid
+preconditioner performs the pressure projection. Set `NUMBA_NUM_THREADS` to control stencil threads, for example
+`NUMBA_NUM_THREADS=8 ./run.sh run ...`; `run.sh` defaults to 4 based on the included M4 benchmark. The manifest records
+the thread count and phase timings. The PETSc backend distributes the pressure algebra only; the code has no GPU
+or fully distributed domain implementation. More vCPUs do not automatically accelerate the pressure solve. Use the measured `elapsed_seconds` before renting capacity;
 run independent cases concurrently if memory permits. Halving spacing multiplies allocated cell counts by about eight,
 and increases the timestep count: expect substantially more than eight times the work.
 

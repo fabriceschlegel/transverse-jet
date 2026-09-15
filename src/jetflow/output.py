@@ -1,4 +1,5 @@
 import csv
+from contextlib import nullcontext
 import hashlib
 import json
 from pathlib import Path
@@ -6,6 +7,7 @@ import platform
 import sys
 import time
 import numpy as np
+import numba
 from .diagnostics import summary, vortex_fields, wall_shear, trajectory, upstream_circulation
 
 
@@ -55,18 +57,33 @@ def restore(solver, path):
 
 def run(solver, directory, restart=None):
     out = Path(directory)
-    if out.exists() and any(out.iterdir()):
+    projection = solver.projection
+    is_root = projection.rank == 0
+    comm = getattr(projection, "PETSc", None)
+    not_empty = out.exists() and any(out.iterdir())
+    if comm is not None:
+        # Ensure every worker inspects the pre-existing filesystem state before
+        # rank zero is allowed to create the new output structure.
+        comm.COMM_WORLD.barrier()
+    if not_empty:
+        # The shared-filesystem check is intentionally performed on every rank
+        # so a root-only exception cannot strand workers at the barrier.
         raise FileExistsError(f"Output directory is not empty: {out}. Choose a new directory.")
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "snapshots").mkdir()
+    if is_root:
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "snapshots").mkdir()
+    if comm is not None:
+        comm.COMM_WORLD.barrier()
     if restart:
         restore(solver, restart)
     c, g = solver.config, solver.grid
-    c.save(out / "config.json")
+    if is_root:
+        c.save(out / "config.json")
     manifest = {
         "status": "running", "fidelity": "unvalidated coarse research prototype; not DNS/LES evidence",
         "python": sys.version, "platform": platform.platform(), "numpy": np.__version__,
         "source_sha256": source_digest(), "pressure_backend": solver.projection.backend,
+        "mpi_ranks": projection.mpi_size,
         "active_cells": int(g.fluid.sum()), "grid_shape": list(g.shape),
         "cells_per_diameter": 1 / c.h, "discrete_pipe_area": float(g.pipe_inlet.sum() * g.h**2),
         "analytic_pipe_area": float(np.pi / 4), "re_crossflow": 1 / c.nu,
@@ -75,9 +92,13 @@ def run(solver, directory, restart=None):
         "inflow": "exponential velocity profile with prescribed delta99; not Blasius",
         "side_and_top": "impermeable free-slip; domain-confinement study required",
         "actuator": "none",
+        "stencil_backend": "Numba parallel CPU",
+        "numba": numba.__version__, "numba_threads": numba.get_num_threads(),
+        "jit_warmup_seconds": solver.jit_warmup_seconds,
     }
     manifest_path = out / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    if is_root:
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     start = time.monotonic()
     stats = summary(solver)
     peak_div, peak_mass, peak_flux = stats["divergence_linf"], abs(stats["scalar_balance_error"]), stats["relative_volume_imbalance"]
@@ -86,11 +107,14 @@ def run(solver, directory, restart=None):
     next_output = solver.state.time + c.output_interval
     next_sample = solver.state.time + c.sample_interval
     last_print = time.monotonic()
-    save_snapshot(solver, out / "snapshots" / f"state_{solver.state.step:07d}.npz")
+    if is_root:
+        save_snapshot(solver, out / "snapshots" / f"state_{solver.state.step:07d}.npz")
     try:
-        with (out / "history.csv").open("w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(stats))
-            writer.writeheader(); writer.writerow(stats)
+        context = (out / "history.csv").open("w", newline="") if is_root else nullcontext()
+        with context as f:
+            writer = csv.DictWriter(f, fieldnames=list(stats)) if is_root else None
+            if is_root:
+                writer.writeheader(); writer.writerow(stats)
             while solver.state.time < c.end_time - 1e-12:
                 old_time = solver.state.time
                 # Synchronize snapshots and samples to requested physical times.
@@ -112,16 +136,20 @@ def run(solver, directory, restart=None):
                     peak_div = max(peak_div, stats["divergence_linf"])
                     peak_mass = max(peak_mass, abs(stats["scalar_balance_error"]))
                     peak_flux = max(peak_flux, stats["relative_volume_imbalance"])
-                    writer.writerow(stats); f.flush()
+                    if is_root:
+                        writer.writerow(stats); f.flush()
                     next_sample += c.sample_interval
                 if solver.state.time >= next_output - 1e-10:
-                    save_snapshot(solver, out / "snapshots" / f"state_{solver.state.step:07d}.npz")
+                    if is_root:
+                        save_snapshot(solver, out / "snapshots" / f"state_{solver.state.step:07d}.npz")
                     next_output += c.output_interval
                 if time.monotonic() - last_print > 10:
-                    print(f"t={solver.state.time:.3f}/{c.end_time:g}, step={solver.state.step}, div={stats['divergence_linf']:.2e}", flush=True)
+                    if is_root:
+                        print(f"t={solver.state.time:.3f}/{c.end_time:g}, step={solver.state.step}, div={stats['divergence_linf']:.2e}", flush=True)
                     last_print = time.monotonic()
-        save_snapshot(solver, out / "final.npz")
-        if mean_duration:
+        if is_root:
+            save_snapshot(solver, out / "final.npz")
+        if mean_duration and is_root:
             np.savez_compressed(out / "mean.npz", velocity=mean_u / mean_duration,
                                 scalar=mean_c / mean_duration, duration=mean_duration,
                                 start=max(c.average_start, manifest["initial_time"]), end=solver.state.time,
@@ -130,13 +158,15 @@ def run(solver, directory, restart=None):
                         final_time=solver.state.time, steps=solver.state.step,
                         sampled_max_divergence=peak_div, sampled_max_scalar_balance_error=peak_mass,
                         sampled_max_relative_volume_imbalance=peak_flux,
-                        mean_duration=mean_duration, final_diagnostics=summary(solver))
+                        mean_duration=mean_duration, phase_timings=solver.timings,
+                        final_diagnostics=summary(solver))
     except BaseException as exc:
         manifest.update(status="failed", error=str(exc), final_time=solver.state.time,
                         elapsed_seconds=time.monotonic() - start)
-        save_snapshot(solver, out / "last_valid.npz")
+        if is_root:
+            save_snapshot(solver, out / "last_valid.npz")
         raise
     finally:
-        manifest_path.write_text(json.dumps(manifest, indent=2, allow_nan=False) + "\n")
+        if is_root:
+            manifest_path.write_text(json.dumps(manifest, indent=2, allow_nan=False) + "\n")
     return manifest
-
