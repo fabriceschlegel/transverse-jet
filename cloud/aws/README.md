@@ -1,5 +1,7 @@
 # AWS GPU trial
 
+**Solver decision: SELECTED — nekRS 26.0 with CUDA.**
+
 This folder prepares a first nekRS GPU smoke test. It does not yet contain the
 body-fitted transverse-jet mesh or claim physical equivalence with the local MAC solver.
 

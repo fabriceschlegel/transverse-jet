@@ -116,6 +116,11 @@ This local finite-difference prototype is not that high-fidelity implementation 
 
 ## Compute
 
+**Recorded decision (2026-09-15):** use Numba-threaded stencils first for a
+multicore MacBook Pro M4 implementation, with PETSc/petsc4py plus MPI reserved
+for the pressure projection if profiling justifies it. Use nekRS 26.0 with CUDA
+for the AWS NVIDIA GPU implementation. See [COMPUTE_PLAN.md](COMPUTE_PLAN.md).
+
 The code uses CPU NumPy/SciPy and a multigrid pressure preconditioner. It has no GPU or distributed MPI implementation.
 More vCPUs do not automatically accelerate one run. Use the measured `elapsed_seconds` before renting capacity;
 run independent cases concurrently if memory permits. Halving spacing multiplies allocated cell counts by about eight,
