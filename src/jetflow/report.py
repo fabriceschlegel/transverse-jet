@@ -163,17 +163,27 @@ def compare_runs(directories, output):
     labels = ["Upstream-box circulation", "Reversed-shear area", "Scalar centroid height near x=2D", "Scalar spanwise width near x=2D"]
     fig, axes = plt.subplots(2, 2, figsize=(12, 7), constrained_layout=True)
     records = []
+    cases = []
     for directory in directories:
         path = Path(directory)
         manifest = json.loads((path / "manifest.json").read_text())
+        config = json.loads((path / "config.json").read_text())
         h = read_history(path)
-        label = f"{manifest['cells_per_diameter']:g} cells/D · {path.name}"
+        case = (config["velocity_ratio"], config["re_jet"], manifest["re_crossflow"])
+        cases.append(case)
+        label = (f"r={case[0]:g}, Re∞={case[2]:g} · "
+                 f"{manifest['cells_per_diameter']:g} cells/D")
         records.append({"directory": str(path.resolve()), "cells_per_diameter": manifest["cells_per_diameter"],
+                        "velocity_ratio": case[0], "re_jet": case[1], "re_crossflow": case[2],
                         "final_time": manifest["final_time"], "final_diagnostics": manifest["final_diagnostics"]})
         for ax, key, title in zip(axes.flat, keys, labels):
             ax.plot(h["time"], h[key], label=label); ax.set(title=title, xlabel="t U∞ / D"); ax.grid(alpha=0.15)
     axes[0, 0].legend(frameon=False)
-    fig.suptitle("Resolution sensitivity · agreement of two coarse grids does not establish convergence")
+    if len(set(cases)) == 1:
+        title = "Resolution sensitivity · agreement of coarse grids does not establish convergence"
+    else:
+        title = "Case comparison on coarse grids · qualitative, not validation evidence"
+    fig.suptitle(title)
     fig.savefig(out / "comparison.png", dpi=150, bbox_inches="tight"); plt.close(fig)
     (out / "comparison.json").write_text(json.dumps(records, indent=2) + "\n")
     return out / "comparison.png"

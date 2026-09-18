@@ -1,4 +1,5 @@
 from dataclasses import replace
+import json
 import numpy as np
 import pytest
 from jetflow.config import Config
@@ -6,6 +7,7 @@ from jetflow.grid import Grid
 from jetflow.solver import Solver
 from jetflow.diagnostics import summary, velocity_gradient, vortex_fields, wall_shear
 from jetflow.output import save_snapshot, restore
+from jetflow.acceleration import momentum_component
 
 
 @pytest.fixture
@@ -132,12 +134,14 @@ def test_scalar_flux_budget_with_arbitrary_scalar(solver):
     assert rhs.sum() * g.h**3 == pytest.approx(net_in, abs=1e-12)
 
 
-def test_manufactured_nonlinear_momentum_converges():
+@pytest.mark.parametrize("momentum_advection", ["centered", "skew-symmetric"])
+def test_manufactured_nonlinear_momentum_converges(momentum_advection):
     # Taylor-Green velocity. Exact -u.grad(u) = (-sin(x)cos(x),-sin(y)cos(y),0).
     # Interior test; not a test of open-boundary pressure accuracy.
     errors = []
     for h in [0.25, 0.125, 0.0625]:
-        c = Config(h=h, x_min=-1, x_max=2, pipe_depth=1, height=1, half_width=1)
+        c = Config(h=h, x_min=-1, x_max=2, pipe_depth=1, height=1,
+                   half_width=1, momentum_advection=momentum_advection)
         base = Grid(c)
         g = Grid(c, fluid=np.ones(base.shape, bool))
         model = Solver.__new__(Solver)
@@ -166,7 +170,56 @@ def test_manufactured_nonlinear_momentum_converges():
     assert errors[1]/errors[2] > 3.5
 
 
-@pytest.mark.parametrize("kwargs", [{"h": 0.23}, {"schmidt": 0}, {"cfl": 1}, {"end_time": float("nan")}])
+def test_skew_advection_does_no_discrete_work_for_closed_compact_field():
+    rng = np.random.default_rng(901)
+    value = rng.normal(size=(12, 11, 10))
+    advectors = [rng.normal(size=value.shape) for _ in range(3)]
+    for field in [value, *advectors]:
+        field[[0, -1], :, :] = 0
+        field[:, [0, -1], :] = 0
+        field[:, :, [0, -1]] = 0
+    support = np.ones(value.shape, dtype=bool)
+    free = np.ones(value.shape, dtype=bool)
+    skew = momentum_component(
+        value, *advectors, support, free, 0.1, 0.0, True)
+    centered = momentum_component(
+        value, *advectors, support, free, 0.1, 0.0, False)
+    assert abs(np.vdot(value, skew)) < 1e-10
+    assert abs(np.vdot(value, centered)) > 1e-3
+
+
+def test_rapid_growth_guard_rejects_unaccepted_state():
+    config = Config(x_min=-2, x_max=3, height=2, half_width=1,
+                    pipe_depth=1, momentum_advection="skew-symmetric")
+    model = Solver(config)
+    candidate = [a.copy() for a in model.state.velocity]
+    model._check_rapid_growth(candidate, 0.04)
+    with pytest.raises(RuntimeError, match="Rapid flow growth detected"):
+        model._check_rapid_growth([4 * a for a in candidate], 0.05)
+    assert model.state.time == 0
+
+
+def test_legacy_snapshot_uses_historical_advection_default(solver, tmp_path):
+    path = tmp_path / "legacy.npz"
+    save_snapshot(solver, path)
+    with np.load(path, allow_pickle=False) as saved:
+        contents = {name: saved[name] for name in saved.files}
+    old_config = json.loads(str(contents["config_json"]))
+    for name in ("momentum_advection", "growth_guard_window",
+                 "max_velocity_growth_factor", "max_energy_growth_factor"):
+        old_config.pop(name)
+    contents["config_json"] = json.dumps(old_config)
+    np.savez_compressed(path, **contents)
+    restarted = Solver(solver.config)
+    restore(restarted, path)
+    assert restarted.state.step == solver.state.step
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"h": 0.23}, {"schmidt": 0}, {"cfl": 1},
+    {"end_time": float("nan")}, {"momentum_advection": "upwind"},
+    {"max_energy_growth_factor": 1.0},
+])
 def test_invalid_cases_rejected(kwargs):
     with pytest.raises(ValueError):
         Config(**kwargs).validate()

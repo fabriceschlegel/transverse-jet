@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from collections import deque
 from time import perf_counter
 import numpy as np
 from .grid import Grid
@@ -39,6 +40,7 @@ class Solver:
         scalar = ((g.y[None, :, None] < 0) & g.fluid).astype(float)
         self.state = State(vel, scalar, pressure)
         self.initial_scalar_mass = scalar.sum() * g.h**3
+        self.reset_growth_guard()
         # Compile outside the measured simulation interval. Numba caches the
         # machine code, so later processes normally pay only cache-load cost.
         start = perf_counter()
@@ -57,7 +59,8 @@ class Solver:
                          for axis in range(3)]
             result.append(momentum_component(a, *advectors,
                                              g.support[component_axis],
-                                             g.free[component_axis], g.h, c.nu))
+                                             g.free[component_axis], g.h, c.nu,
+                                             c.momentum_advection == "skew-symmetric"))
         self._add_timing("momentum_seconds", perf_counter() - start)
         return result
 
@@ -84,6 +87,39 @@ class Solver:
         speed_rate = sum(np.max(np.abs(a)) for a in s.velocity) / g.h
         # 8 rather than 6 covers half-cell Dirichlet diffusion at inlet corners.
         return min(c.dt_max, c.cfl / (speed_rate + 8 * max(c.nu, c.kappa) / g.h**2))
+
+    def _flow_measures(self, velocity):
+        max_velocity = max(max(float(a.max()), float(-a.min())) for a in velocity)
+        face_energy = 0.5 * self.grid.h**3 * sum(
+            float(np.vdot(a.ravel(), a.ravel()).real) for a in velocity)
+        return max_velocity, face_energy
+
+    def reset_growth_guard(self):
+        """Reset the rolling guard after initialization or checkpoint restore."""
+        speed, energy = self._flow_measures(self.state.velocity)
+        self._growth_history = deque([(self.state.time, speed, energy)])
+
+    def _check_rapid_growth(self, velocity, time):
+        speed, energy = self._flow_measures(velocity)
+        history = self._growth_history
+        window = self.config.growth_guard_window
+        # Keep the last sample immediately before the rolling-window boundary,
+        # so the comparison interval is never shorter merely because dt shrank.
+        while len(history) > 1 and time - history[1][0] >= window:
+            history.popleft()
+        base_time, base_speed, base_energy = history[0]
+        speed_ratio = speed / max(base_speed, np.finfo(float).tiny)
+        energy_ratio = energy / max(base_energy, np.finfo(float).tiny)
+        if (time > base_time and
+                (speed_ratio > self.config.max_velocity_growth_factor or
+                 energy_ratio > self.config.max_energy_growth_factor)):
+            raise RuntimeError(
+                "Rapid flow growth detected over "
+                f"Δt={time - base_time:.4g}: max|u| ratio={speed_ratio:.3g} "
+                f"(limit {self.config.max_velocity_growth_factor:g}), "
+                f"face-energy ratio={energy_ratio:.3g} "
+                f"(limit {self.config.max_energy_growth_factor:g})")
+        history.append((time, speed, energy))
 
     def advance(self, dt=None):
         """SSP-RK3 method-of-lines stages, each followed by a MAC projection."""
@@ -114,6 +150,7 @@ class Solver:
         divergence = np.max(np.abs(g.divergence(u3)[g.fluid]))
         if divergence > 1e-6:
             raise RuntimeError(f"Discrete divergence {divergence:g} exceeds acceptance tolerance")
+        self._check_rapid_growth(u3, s.time + dt)
         self.state = State(u3, c3, p3, s.time + dt, s.step + 1,
                            s.scalar_boundary_integral + dt * (q0 / 6 + q1 / 6 + 2 * q2 / 3))
         self.timings["advance_seconds"] += perf_counter() - advance_start

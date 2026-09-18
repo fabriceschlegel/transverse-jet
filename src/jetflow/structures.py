@@ -33,7 +33,8 @@ def midplane_figure(x, y, z, fluid, velocity, scalar, omega, destination, run_la
     concentration = np.take(scalar, kz, axis=-1).mean(axis=-1)
     omega_z = _mean_plane(omega[2], kz)
     extent = (x >= -2.5) & (x <= 5.0)
-    vertical = (y >= 0) & (y <= 3.5)
+    plot_top = float(y[y >= 0].max())
+    vertical = (y >= 0) & (y <= plot_top)
     window = valid & extent[:, None] & vertical[None, :]
     omega_limit = max(0.5, float(np.nanpercentile(np.abs(omega_z[window]), 98)))
 
@@ -52,7 +53,7 @@ def midplane_figure(x, y, z, fluid, velocity, scalar, omega, destination, run_la
     ax.contour(x, y, masked_u.T, levels=[0], colors=["#7f1d1d"], linewidths=1.4)
     _plate_and_nozzle(ax)
     ax.set(title="Mean velocity magnitude and streamlines on the vertical midplane (z ≈ 0)",
-           ylabel="y / D", xlim=(-2.5, 5), ylim=(0, 3.5))
+           ylabel="y / D", xlim=(-2.5, 5), ylim=(0, plot_top))
     ax.text(1.13, 0.46, "recirculation\n$u_x<0$", color="#7f1d1d",
             ha="center", va="center", fontsize=9,
             bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none"})
@@ -68,7 +69,7 @@ def midplane_figure(x, y, z, fluid, velocity, scalar, omega, destination, run_la
                colors=["#334155", "#0f172a"], linewidths=[0.8, 1.1])
     _plate_and_nozzle(ax)
     ax.set(title="Mean signed spanwise vorticity; amber marks the recirculating region",
-           xlabel="x / D", ylabel="y / D", xlim=(-2.5, 5), ylim=(0, 3.5))
+           xlabel="x / D", ylabel="y / D", xlim=(-2.5, 5), ylim=(0, plot_top))
     fig.colorbar(image, ax=ax, label=r"$\overline{\omega}_z D/U_\infty$")
     for ax in axes:
         ax.grid(alpha=0.12)
@@ -85,7 +86,8 @@ def crossflow_figure(x, y, z, fluid, velocity, scalar, omega, destination):
     selected = np.concatenate([omega[0, index][np.isfinite(omega[0, index])]
                                for index in indices])
     limit = max(0.5, float(np.percentile(np.abs(selected), 98)))
-    fig, axes = plt.subplots(1, 4, figsize=(16, 4.6), constrained_layout=True,
+    plot_top = float(y[y >= 0].max())
+    fig, axes = plt.subplots(1, 4, figsize=(16, 8.5), constrained_layout=True,
                              sharex=True, sharey=True)
     image = None
     for ax, index in zip(axes, indices):
@@ -106,7 +108,7 @@ def crossflow_figure(x, y, z, fluid, velocity, scalar, omega, destination):
                   velocity[1, index, ::stride_y, ::stride_z], color="#111827",
                   alpha=0.65, angles="xy", scale_units="xy", scale=6.0, width=0.004)
         ax.set(title=f"x / D = {x[index]:.2f}", xlabel="z / D",
-               xlim=(-1.6, 1.6), ylim=(0, 3.2), aspect="equal")
+               xlim=(-1.6, 1.6), ylim=(0, plot_top), aspect="equal")
         ax.grid(alpha=0.10)
     axes[0].set_ylabel("y / D")
     fig.colorbar(image, ax=axes, shrink=0.84,
@@ -138,7 +140,8 @@ def structure_3d_figure(x, y, z, fluid, velocity, omega, q, destination,
     from matplotlib.patches import Patch
 
     ix = (x >= -1.0) & (x <= 4.0)
-    iy = (y >= 0.0) & (y <= 3.2)
+    plot_top = float(y[y >= 0].max())
+    iy = (y >= 0.0) & (y <= plot_top)
     iz = (z >= -1.6) & (z <= 1.6)
     xs, ys, zs = x[ix], y[iy], z[iz]
     crop = np.ix_(ix, iy, iz)
@@ -172,8 +175,8 @@ def structure_3d_figure(x, y, z, fluid, velocity, omega, q, destination,
         ax.plot(0.5*np.cos(angle), 0.5*np.sin(angle), np.zeros_like(angle),
                 color="#111827", lw=1.4)
         ax.set(xlabel="x / D", ylabel="z / D", zlabel="y / D",
-               xlim=(-1, 4), ylim=(-1.6, 1.6), zlim=(0, 3.2))
-        ax.set_box_aspect((5, 3.2, 3.2))
+               xlim=(-1, 4), ylim=(-1.6, 1.6), zlim=(0, plot_top))
+        ax.set_box_aspect((5, 3.2, plot_top))
     axes[0].view_init(elev=24, azim=-62)
     axes[0].set_title("Oblique view")
     axes[1].view_init(elev=9, azim=2)

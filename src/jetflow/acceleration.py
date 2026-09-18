@@ -36,7 +36,7 @@ def _neighbor(value, support, i, j, k, axis, direction):
 
 @njit(parallel=True, cache=True)
 def momentum_component(value, advector_x, advector_y, advector_z,
-                       support, free, h, nu):
+                       support, free, h, nu, skew_symmetric=False):
     result = np.zeros_like(value)
     for i in prange(value.shape[0]):
         for j in range(value.shape[1]):
@@ -48,12 +48,26 @@ def momentum_component(value, advector_x, advector_y, advector_z,
                     minus = _neighbor(value, support, i, j, k, axis, -1)
                     plus = _neighbor(value, support, i, j, k, axis, 1)
                     if axis == 0:
-                        advector = advector_x[i, j, k]
+                        advecting = advector_x
                     elif axis == 1:
-                        advector = advector_y[i, j, k]
+                        advecting = advector_y
                     else:
-                        advector = advector_z[i, j, k]
-                    rate += -advector * (plus - minus) / (2.0 * h)
+                        advecting = advector_z
+                    advector = advecting[i, j, k]
+                    if skew_symmetric:
+                        advector_minus = _neighbor(
+                            advecting, support, i, j, k, axis, -1)
+                        advector_plus = _neighbor(
+                            advecting, support, i, j, k, axis, 1)
+                        # Half advective and half conservative form. For a
+                        # centered difference with closed/periodic boundaries,
+                        # diag(u)D + D diag(u) is skew-adjoint and therefore
+                        # contributes no semi-discrete kinetic-energy growth.
+                        rate -= (advector * (plus - minus)
+                                 + advector_plus * plus
+                                 - advector_minus * minus) / (4.0 * h)
+                    else:
+                        rate -= advector * (plus - minus) / (2.0 * h)
                     rate += nu * (plus - 2.0 * value[i, j, k] + minus) / (h * h)
                 result[i, j, k] = rate
     return result

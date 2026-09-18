@@ -41,9 +41,13 @@ def save_snapshot(solver, path):
 def restore(solver, path):
     with np.load(path, allow_pickle=False) as a:
         old_config = json.loads(str(a["config_json"]))
+        defaults = type(solver.config)()
         ignored = {"end_time", "average_start", "output_interval", "sample_interval"}
         for key, value in vars(solver.config).items():
-            if key not in ignored and value != old_config[key]:
+            # Snapshots written before a setting was introduced inherit that
+            # setting's historical default rather than failing with KeyError.
+            old_value = old_config.get(key, getattr(defaults, key))
+            if key not in ignored and value != old_value:
                 raise ValueError(f"Restart configuration mismatch for {key}")
         solver.state.velocity = [a[name].copy() for name in ("u", "v", "w")]
         solver.state.scalar = a["scalar"].copy()
@@ -53,6 +57,7 @@ def restore(solver, path):
         solver.initial_scalar_mass = float(a["initial_scalar_mass"])
     if solver.state.time >= solver.config.end_time:
         raise ValueError("Restart time must precede end_time")
+    solver.reset_growth_guard()
 
 
 def run(solver, directory, restart=None):
@@ -93,6 +98,12 @@ def run(solver, directory, restart=None):
         "side_and_top": "impermeable free-slip; domain-confinement study required",
         "actuator": "none",
         "stencil_backend": "Numba parallel CPU",
+        "momentum_advection": c.momentum_advection,
+        "rapid_growth_guard": {
+            "window": c.growth_guard_window,
+            "max_velocity_factor": c.max_velocity_growth_factor,
+            "max_face_energy_factor": c.max_energy_growth_factor,
+        },
         "numba": numba.__version__, "numba_threads": numba.get_num_threads(),
         "jit_warmup_seconds": solver.jit_warmup_seconds,
     }

@@ -80,10 +80,18 @@ Velocities lie on MAC faces and pressure/scalar at cell centers. The pressure ma
 `-D G` on the connected fluid-cell graph; the matching face gradient enforces discrete incompressibility.
 CG with smoothed-aggregation multigrid solves pressure. A failed pressure solve or nonfinite/divergent state stops the run.
 
-Momentum uses centered second-order spatial derivatives and interpolated advecting velocities.
-This advective form is **not a discrete kinetic-energy-conserving scheme**. SSP-RK3 stages are each
+The `centered` reference momentum scheme uses second-order spatial derivatives and interpolated advecting velocities.
+That advective form is **not a discrete kinetic-energy-conserving scheme**. SSP-RK3 stages are each
 projected. This does **not** establish third-order accuracy for the complete open-boundary pressure/velocity scheme;
 the nonincremental pressure treatment and boundary splitting require their own convergence assessment.
+
+Set `momentum_advection` to `"skew-symmetric"` for the kinetic-energy-controlled form used by the
+high-Reynolds-number JFM-parameter pilots. It averages the advective and conservative centered forms, so its
+semi-discrete convective operator does no discrete kinetic-energy work where the centered difference is skew-adjoint;
+this is tested with compact-support fields. Walls, open-boundary energy fluxes, time integration and under-resolution
+still matter. A rolling guard compares maximum face velocity and a discrete
+face-energy measure over `growth_guard_window`; exceeding `max_velocity_growth_factor` or
+`max_energy_growth_factor` rejects the candidate step and writes the preceding state as `last_valid.npz`.
 
 Scalar transport uses conservative first-order donor-cell advection and centered diffusion. It is never
 clipped to conceal overshoots. Its integrated mass is checked against the RK-weighted boundary flux.

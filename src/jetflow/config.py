@@ -25,6 +25,10 @@ class Config:
     average_start: float = 2.0
     pressure_rtol: float = 1e-10
     pressure_maxiter: int = 1000
+    momentum_advection: str = "centered"
+    growth_guard_window: float = 0.1
+    max_velocity_growth_factor: float = 3.0
+    max_energy_growth_factor: float = 1.5
 
     @property
     def nu(self):
@@ -36,13 +40,18 @@ class Config:
 
     def validate(self):
         for key, value in asdict(self).items():
-            if not math.isfinite(value):
+            if isinstance(value, (int, float)) and not math.isfinite(value):
                 raise ValueError(f"{key} must be finite")
         for key in ("h", "pipe_depth", "height", "half_width", "velocity_ratio",
                     "re_jet", "schmidt", "delta99", "cfl", "dt_max", "end_time",
-                    "output_interval", "sample_interval", "pressure_rtol"):
+                    "output_interval", "sample_interval", "pressure_rtol",
+                    "growth_guard_window"):
             if getattr(self, key) <= 0:
                 raise ValueError(f"{key} must be positive")
+        if self.momentum_advection not in {"centered", "skew-symmetric"}:
+            raise ValueError("momentum_advection must be 'centered' or 'skew-symmetric'")
+        if self.max_velocity_growth_factor <= 1 or self.max_energy_growth_factor <= 1:
+            raise ValueError("rapid-growth factors must exceed one")
         if self.x_min >= -0.5 or self.x_max <= 1.0 or self.half_width <= 0.5:
             raise ValueError("Domain must surround the diameter-one nozzle")
         if self.h > 0.25:
@@ -66,4 +75,3 @@ class Config:
     @classmethod
     def load(cls, path):
         return cls(**json.loads(Path(path).read_text())).validate()
-
